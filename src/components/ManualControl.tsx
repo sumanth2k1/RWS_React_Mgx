@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { Droplets, Power, Play, Square } from 'lucide-react';
 import { useNotification } from '../context/NotificationContext';
 
@@ -15,7 +15,43 @@ const ManualControl: React.FC<ManualControlProps> = ({
 }) => {
   const [duration, setDuration] = useState(5000);
   const [isOperating, setIsOperating] = useState(false);
+  const [countdown, setCountdown] = useState(0);
   const { addNotification } = useNotification();
+
+  // Countdown timer effect
+  useEffect(() => {
+    let interval: NodeJS.Timeout;
+    
+    if (countdown > 0) {
+      interval = setInterval(() => {
+        setCountdown(prev => {
+          if (prev <= 1) {
+            setIsOperating(false);
+            return 0;
+          }
+          return prev - 1;
+        });
+      }, 1000);
+    }
+    
+    return () => {
+      if (interval) clearInterval(interval);
+    };
+  }, [countdown]);
+
+  // Update countdown when pump status changes
+  useEffect(() => {
+    if (currentStatus === 'running' && !isOperating) {
+      setIsOperating(true);
+      // If we don't have a countdown running, start one with default duration
+      if (countdown === 0) {
+        setCountdown(Math.ceil(duration / 1000));
+      }
+    } else if (currentStatus === 'idle') {
+      setIsOperating(false);
+      setCountdown(0);
+    }
+  }, [currentStatus]);
 
   const waterNow = async () => {
     if (!isOnline) {
@@ -40,10 +76,8 @@ const ManualControl: React.FC<ManualControlProps> = ({
       if (data.success) {
         addNotification(`Manual watering started (${(duration / 1000).toFixed(1)}s)`, 'success');
         
-        // Auto-reset operating state after duration
-        setTimeout(() => {
-          setIsOperating(false);
-        }, duration);
+        // Start countdown timer
+        setCountdown(Math.ceil(duration / 1000));
       } else {
         throw new Error(data.error || 'Failed to start watering');
       }
@@ -66,6 +100,7 @@ const ManualControl: React.FC<ManualControlProps> = ({
       
       if (data.success) {
         setIsOperating(false);
+        setCountdown(0);
         addNotification('Watering stopped', 'info');
       } else {
         throw new Error(data.error || 'Failed to stop watering');
@@ -95,13 +130,25 @@ const ManualControl: React.FC<ManualControlProps> = ({
         <div className="text-lg font-semibold mb-1">
           {isRunning ? 'Watering Active' : 'Pump Idle'}
         </div>
-        <div className="text-sm opacity-75">
-          {isRunning ? 'System is actively watering plants' : 'Ready for operation'}
-        </div>
+        {isRunning && countdown > 0 ? (
+          <div className="text-sm opacity-75">
+            <div className="text-2xl font-bold text-blue-700 mb-1">{countdown}s</div>
+            <div>Time remaining</div>
+          </div>
+        ) : (
+          <div className="text-sm opacity-75">
+            {isRunning ? 'System is actively watering plants' : 'Ready for operation'}
+          </div>
+        )}
         {isRunning && (
           <div className="mt-2">
             <div className="w-full bg-blue-200 rounded-full h-2">
-              <div className="bg-blue-600 h-2 rounded-full animate-pulse" style={{ width: '100%' }}></div>
+              <div 
+                className="bg-blue-600 h-2 rounded-full transition-all duration-1000" 
+                style={{ 
+                  width: countdown > 0 ? `${(countdown / Math.ceil(duration / 1000)) * 100}%` : '100%' 
+                }}
+              ></div>
             </div>
           </div>
         )}

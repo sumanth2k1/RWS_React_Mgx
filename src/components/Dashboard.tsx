@@ -2,8 +2,7 @@ import React, { useEffect, useState } from 'react';
 import Header from './Header';
 import DeviceStatus from './DeviceStatus';
 import ManualControl from './ManualControl';
-import ScheduleManager from './ScheduleManager';
-import SystemStatus from './SystemStatus';
+import AlarmManager from './AlarmManager';
 import NotificationCenter from './NotificationCenter';
 import { useDevice } from '../context/DeviceContext';
 import { useWebSocket } from '../context/WebSocketContext';
@@ -121,10 +120,16 @@ const Dashboard: React.FC<DashboardProps> = ({ deviceId, onLogout }) => {
             isOnline={device?.status === 'online'}
             currentStatus={device?.pumpStatus || 'idle'}
           />
-          <SystemStatus isConnected={isConnected} />
+          <div className="bg-white rounded-2xl shadow-lg border border-gray-100 p-6">
+            <div className="text-center">
+              <div className="text-lg font-semibold text-gray-800 mb-2">Your Device</div>
+              <div className="text-3xl font-bold text-blue-600">{deviceId}</div>
+              <div className="text-sm text-gray-500 mt-2">Personal Dashboard</div>
+            </div>
+          </div>
         </div>
 
-        <ScheduleManager 
+        <AlarmManager 
           deviceId={deviceId} 
           isOnline={device?.status === 'online'} 
         />
