@@ -49,6 +49,18 @@ const AlarmManager: React.FC<AlarmManagerProps> = ({ deviceId, isOnline }) => {
     try {
       const response = await fetch(`https://rws-backend-v2.onrender.com/api/devices/${deviceId}/alarms`);
       const data = await response.json();
+      // Check if response is ok and is JSON
+      if (!response.ok) {
+        const errorText = await response.text();
+        throw new Error(`HTTP ${response.status}: ${errorText}`);
+      }
+      
+      const contentType = response.headers.get('content-type');
+      if (!contentType || !contentType.includes('application/json')) {
+        const responseText = await response.text();
+        throw new Error(`Expected JSON response but got: ${contentType}. Response: ${responseText.substring(0, 200)}`);
+      }
+      
       
       if (data.success) {
         setAlarms(data.alarms || []);
@@ -57,7 +69,7 @@ const AlarmManager: React.FC<AlarmManagerProps> = ({ deviceId, isOnline }) => {
       }
     } catch (error: any) {
       console.error('Failed to fetch alarms:', error);
-      addNotification('Failed to fetch alarms', 'error');
+      addNotification(`Failed to fetch alarms: ${error.message}`, 'error');
     } finally {
       setLoading(false);
     }
