@@ -78,9 +78,21 @@ const Dashboard: React.FC<DashboardProps> = ({ deviceId, onLogout }) => {
         }
         break;
         
-      case 'schedule_executed':
+      case 'alarm_executed':
         if (data.deviceId === deviceId) {
-          addNotification(`Schedule executed (${(data.duration / 1000).toFixed(1)}s)`, 'success');
+          addNotification(`Alarm "${data.name}" executed (${(data.duration / 1000).toFixed(1)}s)`, 'success');
+        }
+        break;
+        
+      case 'alarm_missed':
+        if (data.deviceId === deviceId) {
+          addNotification(`Alarm "${data.name}" missed - ${data.reason}`, 'warning');
+        }
+        break;
+        
+      case 'alarm_failed':
+        if (data.deviceId === deviceId) {
+          addNotification(`Alarm "${data.name}" failed - ${data.reason}`, 'error');
         }
         break;
         

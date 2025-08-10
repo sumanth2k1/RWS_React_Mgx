@@ -109,39 +109,43 @@ const scheduleSchema = new mongoose.Schema({
     required: true,
     index: true
   },
+  name: {
+    type: String,
+    required: true
+  },
   time: {
-    type: Date,
+    type: String, // HH:MM format
     required: true,
     index: true
   },
+  days: [{
+    type: String,
+    enum: ['monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday', 'sunday'],
+    required: true
+  }],
   duration: {
     type: Number,
     required: true,
     min: 1000,
     max: 300000 // Max 5 minutes
   },
-  executed: {
+  isActive: {
     type: Boolean,
-    default: false
+    default: true
   },
   createdAt: {
     type: Date,
     default: Date.now
   },
-  executedAt: Date,
-  status: {
-    type: String,
-    enum: ['pending', 'executed', 'failed', 'expired'],
-    default: 'pending'
-  },
-  retryCount: {
+  lastExecuted: Date,
+  nextExecution: Date,
+  executionCount: {
     type: Number,
     default: 0
-  },
-  lastError: String
+  }
 });
 
-const Schedule = mongoose.model('Schedule', scheduleSchema);
+const Alarm = mongoose.model('Alarm', scheduleSchema);
 
 // Connection tracking
 const connectedDevices = new Map();
@@ -392,7 +396,7 @@ async function handleWebSocketMessage(ws, type, data, clientIP = 'unknown') {
         break;
         
       case MESSAGE_TYPE.SCHEDULE_EXECUTED:
-        await handleScheduleExecuted(ws, data);
+        await handleAlarmExecuted(ws, data);
         break;
         
       case MESSAGE_TYPE.FRONTEND_JOIN:
@@ -654,23 +658,44 @@ async function handleCommandAck(ws, data) {
   }
 }
 
-async function handleScheduleExecuted(ws, data) {
-  const { scheduleId, deviceId } = data;
+async function handleAlarmExecuted(ws, data) {
+  const { alarmId, deviceId } = data;
   
-  if (!scheduleId || !deviceId) {
-    console.error('❌ Schedule execution missing required fields');
-    sendMessage(ws, MESSAGE_TYPE.ERROR, { error: 'Schedule ID and Device ID are required' });
+  if (!alarmId || !deviceId) {
+    console.error('❌ Alarm execution missing required fields');
+    sendMessage(ws, MESSAGE_TYPE.ERROR, { error: 'Alarm ID and Device ID are required' });
     return;
   }
   
   try {
-    console.log(`✅ Schedule execution confirmed by device ${deviceId}: ${scheduleId}`);
+    console.log(`✅ Alarm execution confirmed by device ${deviceId}: ${alarmId}`);
     
-    // Update schedule status
-    const schedule = await Schedule.findByIdAndUpdate(scheduleId, {
-      status: 'executed',
-      executedAt: new Date(),
-      executed: true
+    // Find the alarm (no status update needed for recurring alarms)
+    const alarm = await Alarm.findById(alarmId);
+    
+    if (alarm) {
+      console.log(`📅 Alarm execution confirmed: ${alarm.name}`);
+    } else {
+      console.warn(`⚠️ Alarm ${alarmId} not found in database`);
+    }
+    
+    // Notify frontend
+    broadcastToFrontends('alarm_execution_confirmed', {
+      deviceId,
+      alarmId,
+      alarmName: alarm ? alarm.name : 'Unknown',
+      timestamp: new Date().toISOString(),
+      alarmFound: !!alarm
+    });
+    
+  } catch (error) {
+    console.error('❌ Failed to handle alarm execution:', error);
+    sendMessage(ws, MESSAGE_TYPE.ERROR, { 
+      error: 'Failed to process alarm execution',
+      details: error.message
+    });
+  }
+}
     }, { new: true });
     
     if (schedule) {
@@ -847,6 +872,44 @@ setInterval(async () => {
   }
 }, 120000); // Every 2 minutes
 
+// Helper function to calculate next execution time
+function calculateNextExecution(time, days) {
+  const [hours, minutes] = time.split(':').map(Number);
+  const now = new Date();
+  const today = now.getDay(); // 0 = Sunday, 1 = Monday, etc.
+  
+  // Convert day names to numbers
+  const dayMap = {
+    'sunday': 0, 'monday': 1, 'tuesday': 2, 'wednesday': 3,
+    'thursday': 4, 'friday': 5, 'saturday': 6
+  };
+  
+  const targetDays = days.map(day => dayMap[day]).sort((a, b) => a - b);
+  
+  // Find the next occurrence
+  for (let i = 0; i < 7; i++) {
+    const checkDate = new Date(now);
+    checkDate.setDate(now.getDate() + i);
+    checkDate.setHours(hours, minutes, 0, 0);
+    
+    const checkDay = checkDate.getDay();
+    
+    if (targetDays.includes(checkDay)) {
+      // If it's today, make sure the time hasn't passed
+      if (i === 0 && checkDate <= now) {
+        continue;
+      }
+      return checkDate;
+    }
+  }
+  
+  // Fallback: next week's first day
+  const nextWeek = new Date(now);
+  nextWeek.setDate(now.getDate() + 7);
+  nextWeek.setHours(hours, minutes, 0, 0);
+  return nextWeek;
+}
+
 // Enhanced REST API Routes
 app.get('/', (req, res) => {
   res.json({
@@ -959,51 +1022,58 @@ app.post('/api/devices/register', async (req, res) => {
   }
 });
 
-// Get device schedules
-app.get('/api/devices/:deviceId/schedules', async (req, res) => {
+// Get device alarms
+app.get('/api/devices/:deviceId/alarms', async (req, res) => {
   try {
     const { deviceId } = req.params;
     
-    console.log(`📅 Fetching schedules for device: ${deviceId}`);
+    console.log(`📅 Fetching alarms for device: ${deviceId}`);
     
-    const schedules = await Schedule.find({
-      deviceId,
-      status: 'pending',
-      time: { $gte: new Date() }
-    }).sort({ time: 1 }).lean();
+    const alarms = await Alarm.find({ deviceId }).sort({ time: 1 }).lean();
     
-    console.log(`📅 Found ${schedules.length} pending schedules for device ${deviceId}`);
+    console.log(`📅 Found ${alarms.length} alarms for device ${deviceId}`);
     
     res.json({
       success: true,
-      schedules: schedules.map(schedule => ({
-        id: schedule._id,
-        time: schedule.time.toISOString(),
-        duration: schedule.duration,
-        status: schedule.status,
-        createdAt: schedule.createdAt
+      alarms: alarms.map(alarm => ({
+        id: alarm._id,
+        name: alarm.name,
+        time: alarm.time,
+        days: alarm.days,
+        duration: alarm.duration,
+        isActive: alarm.isActive,
+        createdAt: alarm.createdAt,
+        lastExecuted: alarm.lastExecuted,
+        nextExecution: alarm.nextExecution,
+        executionCount: alarm.executionCount
       })),
       deviceId,
       timestamp: new Date().toISOString()
     });
     
   } catch (error) {
-    console.error('❌ Get schedules error:', error);
+    console.error('❌ Get alarms error:', error);
     res.status(500).json({
-      error: 'Failed to get schedules',
+      error: 'Failed to get alarms',
       details: error.message
     });
   }
 });
 
-// Create schedule
-app.post('/api/schedules', async (req, res) => {
+// Create alarm
+app.post('/api/alarms', async (req, res) => {
   try {
-    const { deviceId, time, duration } = req.body;
+    const { deviceId, name, time, days, duration } = req.body;
     
-    if (!deviceId || !time || !duration) {
+    if (!deviceId || !name || !time || !days || !duration) {
       return res.status(400).json({
-        error: 'Device ID, time, and duration are required'
+        error: 'Device ID, name, time, days, and duration are required'
+      });
+    }
+    
+    if (!Array.isArray(days) || days.length === 0) {
+      return res.status(400).json({
+        error: 'At least one day must be selected'
       });
     }
     
@@ -1012,39 +1082,115 @@ app.post('/api/schedules', async (req, res) => {
       return res.status(404).json({ error: 'Device not found' });
     }
     
-    const schedule = new Schedule({
+    // Calculate next execution time
+    const nextExecution = calculateNextExecution(time, days);
+    
+    const alarm = new Alarm({
       deviceId,
-      time: new Date(time),
+      name,
+      time,
+      days,
+      duration: parseInt(duration),
+      nextExecution
+    });
+    
+    await alarm.save();
+    
+    // Schedule the recurring job with Agenda
+    await agenda.every('1 minute', 'check alarms', {
+      alarmId: alarm._id.toString(),
+      deviceId,
+      name,
+      time,
+      days,
       duration: parseInt(duration)
     });
     
-    await schedule.save();
-    
-    // Schedule the job with Agenda
-    await agenda.schedule(new Date(time), 'execute watering', {
-      scheduleId: schedule._id.toString(),
-      deviceId,
-      duration: parseInt(duration)
-    });
-    
-    console.log(`📅 Schedule created for device ${deviceId}: ${schedule._id}`);
+    console.log(`📅 Alarm created for device ${deviceId}: ${alarm._id}`);
     
     res.json({
       success: true,
-      message: 'Schedule created successfully',
-      schedule: {
-        id: schedule._id,
-        deviceId: schedule.deviceId,
-        time: schedule.time,
-        duration: schedule.duration,
-        status: schedule.status
+      message: 'Alarm created successfully',
+      alarm: {
+        id: alarm._id,
+        deviceId: alarm.deviceId,
+        name: alarm.name,
+        time: alarm.time,
+        days: alarm.days,
+        duration: alarm.duration,
+        isActive: alarm.isActive,
+        nextExecution: alarm.nextExecution
       }
     });
     
   } catch (error) {
-    console.error('❌ Create schedule error:', error);
+    console.error('❌ Create alarm error:', error);
     res.status(500).json({
-      error: 'Failed to create schedule',
+      error: 'Failed to create alarm',
+      details: error.message
+    });
+  }
+});
+
+// Toggle alarm active status
+app.put('/api/alarms/:alarmId/toggle', async (req, res) => {
+  try {
+    const { alarmId } = req.params;
+    
+    const alarm = await Alarm.findById(alarmId);
+    if (!alarm) {
+      return res.status(404).json({ error: 'Alarm not found' });
+    }
+    
+    alarm.isActive = !alarm.isActive;
+    if (alarm.isActive) {
+      alarm.nextExecution = calculateNextExecution(alarm.time, alarm.days);
+    }
+    
+    await alarm.save();
+    
+    console.log(`📅 Alarm ${alarmId} toggled to ${alarm.isActive ? 'active' : 'inactive'}`);
+    
+    res.json({
+      success: true,
+      message: `Alarm ${alarm.isActive ? 'activated' : 'deactivated'}`,
+      alarm: {
+        id: alarm._id,
+        isActive: alarm.isActive,
+        nextExecution: alarm.nextExecution
+      }
+    });
+    
+  } catch (error) {
+    console.error('❌ Toggle alarm error:', error);
+    res.status(500).json({
+      error: 'Failed to toggle alarm',
+      details: error.message
+    });
+  }
+});
+
+// Delete alarm
+app.delete('/api/alarms/:alarmId', async (req, res) => {
+  try {
+    const { alarmId } = req.params;
+    
+    const alarm = await Alarm.findByIdAndDelete(alarmId);
+    if (!alarm) {
+      return res.status(404).json({ error: 'Alarm not found' });
+    }
+    
+    console.log(`📅 Alarm deleted: ${alarmId}`);
+    
+    res.json({
+      success: true,
+      message: 'Alarm deleted successfully'
+    });
+    
+  } catch (error) {
+    console.error('❌ Delete alarm error:', error);
+    res.status(500).json({
+      error: 'Failed to delete alarm',
       details: error.message
     });
   }
@@ -1125,61 +1271,111 @@ app.get('/api/debug/connections', (req, res) => {
   });
 });
 
-// Agenda job definitions
-agenda.define('execute watering', async (job) => {
-  const { scheduleId, deviceId, duration } = job.attrs.data;
-  
+// Agenda job definitions for recurring alarms
+agenda.define('check alarms', async (job) => {
   try {
-    console.log(`⏰ Executing scheduled watering for device ${deviceId} (${duration}ms)`);
+    const now = new Date();
     
-    await Schedule.findByIdAndUpdate(scheduleId, {
-      status: 'executed',
-      executedAt: new Date()
+    // Find all active alarms that should execute now
+    const alarmsToExecute = await Alarm.find({
+      isActive: true,
+      nextExecution: { $lte: now }
     });
     
-    const device = await Device.findOne({ deviceId });
+    console.log(`⏰ Checking alarms: found ${alarmsToExecute.length} to execute`);
+    
+    for (const alarm of alarmsToExecute) {
+      await executeAlarm(alarm);
+    }
+    
+  } catch (error) {
+    console.error('❌ Error checking alarms:', error);
+  }
+});
+
+async function executeAlarm(alarm) {
+  
+  try {
+    console.log(`⏰ Executing alarm for device ${alarm.deviceId}: ${alarm.name} (${alarm.duration}ms)`);
+    
+    const device = await Device.findOne({ deviceId: alarm.deviceId });
     if (!device || device.status !== 'online') {
-      console.log(`⚠️ Device ${deviceId} is offline, marking schedule as failed`);
-      await Schedule.findByIdAndUpdate(scheduleId, {
-        status: 'failed',
-        lastError: 'Device offline'
+      console.log(`⚠️ Device ${alarm.deviceId} is offline, skipping alarm execution`);
+      
+      // Update next execution time anyway
+      alarm.nextExecution = calculateNextExecution(alarm.time, alarm.days);
+      await alarm.save();
+      
+      // Notify frontends about missed execution
+      broadcastToFrontends('alarm_missed', {
+        deviceId: alarm.deviceId,
+        alarmId: alarm._id,
+        name: alarm.name,
+        reason: 'Device offline',
+        timestamp: new Date().toISOString()
       });
       return;
     }
     
     // Send watering command via WebSocket
-    const sent = sendToDevice(deviceId, MESSAGE_TYPE.WATER_COMMAND, {
+    const sent = sendToDevice(alarm.deviceId, MESSAGE_TYPE.WATER_COMMAND, {
       action: 'water',
-      duration,
-      scheduleId,
-      commandId: `schedule_${scheduleId}_${Date.now()}`
+      duration: alarm.duration,
+      alarmId: alarm._id.toString(),
+      alarmName: alarm.name,
+      commandId: `alarm_${alarm._id}_${Date.now()}`
     });
     
     if (sent) {
-      broadcastToFrontends('schedule_executed', {
-        deviceId,
-        scheduleId,
-        duration,
-        timestamp: new Date()
+      // Update alarm execution info
+      alarm.lastExecuted = new Date();
+      alarm.executionCount += 1;
+      alarm.nextExecution = calculateNextExecution(alarm.time, alarm.days);
+      await alarm.save();
+      
+      broadcastToFrontends('alarm_executed', {
+        deviceId: alarm.deviceId,
+        alarmId: alarm._id,
+        name: alarm.name,
+        duration: alarm.duration,
+        executionCount: alarm.executionCount,
+        nextExecution: alarm.nextExecution,
+        timestamp: new Date().toISOString()
       });
       
-      console.log(`✅ Scheduled watering command sent to device ${deviceId}`);
+      console.log(`✅ Alarm executed successfully for device ${alarm.deviceId}: ${alarm.name}`);
     } else {
-      await Schedule.findByIdAndUpdate(scheduleId, {
-        status: 'failed',
-        lastError: 'Device not connected'
+      console.log(`❌ Failed to send alarm command to device ${alarm.deviceId}`);
+      
+      // Still update next execution time
+      alarm.nextExecution = calculateNextExecution(alarm.time, alarm.days);
+      await alarm.save();
+      
+      broadcastToFrontends('alarm_failed', {
+        deviceId: alarm.deviceId,
+        alarmId: alarm._id,
+        name: alarm.name,
+        reason: 'Device not connected',
+        timestamp: new Date().toISOString()
       });
     }
     
   } catch (error) {
-    console.error('❌ Scheduled watering execution error:', error);
+    console.error('❌ Alarm execution error:', error);
     
-    await Schedule.findByIdAndUpdate(scheduleId, {
-      status: 'failed',
-      lastError: error.message
+    // Update next execution time even on error
+    alarm.nextExecution = calculateNextExecution(alarm.time, alarm.days);
+    await alarm.save();
+    
+    broadcastToFrontends('alarm_error', {
+      deviceId: alarm.deviceId,
+      alarmId: alarm._id,
+      name: alarm.name,
+      error: error.message,
+      timestamp: new Date().toISOString()
     });
   }
-});
+}
 
 // Start agenda
 (async function() {

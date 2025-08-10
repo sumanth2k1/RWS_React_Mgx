@@ -47,42 +47,15 @@ const AlarmManager: React.FC<AlarmManagerProps> = ({ deviceId, isOnline }) => {
   const fetchAlarms = async () => {
     setLoading(true);
     try {
-      const response = await fetch(`https://rws-backend-v2.onrender.com/api/devices/${deviceId}/schedules`);
-      const data = await response.json();
-      // Check if response is ok and is JSON
+      const response = await fetch(`https://rws-backend-v2.onrender.com/api/devices/${deviceId}/alarms`);
       if (!response.ok) {
-        const errorText = await response.text();
-        throw new Error(`HTTP ${response.status}: ${errorText}`);
+        throw new Error(`HTTP ${response.status}: ${response.statusText}`);
       }
       
-      const contentType = response.headers.get('content-type');
-      if (!contentType || !contentType.includes('application/json')) {
-        const responseText = await response.text();
-        throw new Error(`Expected JSON response but got: ${contentType}. Response: ${responseText.substring(0, 200)}`);
-      }
+      const data = await response.json();
       
       if (data.success) {
-        // Convert schedules to the alarm format for compatibility with UI
-        const formattedAlarms = (data.schedules || []).map((schedule: any) => {
-          // Extract time from ISO string
-          const scheduleTime = new Date(schedule.time);
-          const hours = String(scheduleTime.getHours()).padStart(2, '0');
-          const minutes = String(scheduleTime.getMinutes()).padStart(2, '0');
-          
-          return {
-            _id: schedule.id,
-            deviceId: deviceId,
-            time: `${hours}:${minutes}`,
-            duration: schedule.duration,
-            days: ['monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday', 'sunday'], // Default to every day
-            status: schedule.status,
-            name: `Watering at ${hours}:${minutes}`,
-            createdAt: schedule.createdAt || new Date().toISOString(),
-            isActive: schedule.status === 'pending'
-          };
-        });
-        
-        setAlarms(formattedAlarms);
+        setAlarms(data.alarms || []);
       } else {
         throw new Error(data.error || 'Failed to fetch alarms');
       }
@@ -111,22 +84,14 @@ const AlarmManager: React.FC<AlarmManagerProps> = ({ deviceId, isOnline }) => {
     }
 
     try {
-      // Convert the alarm time to a Date object using the next occurrence of that time
-      const [hours, minutes] = newAlarm.time.split(':');
-      const alarmTime = new Date();
-      alarmTime.setHours(parseInt(hours, 10), parseInt(minutes, 10), 0, 0);
-      
-      // If time is already past for today, schedule for tomorrow
-      if (alarmTime < new Date()) {
-        alarmTime.setDate(alarmTime.getDate() + 1);
-      }
-
-      const response = await fetch(`https://rws-backend-v2.onrender.com/api/schedules`, {
+      const response = await fetch(`https://rws-backend-v2.onrender.com/api/alarms`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           deviceId,
-          time: alarmTime.toISOString(),
+          name: newAlarm.name,
+          time: newAlarm.time,
+          days: newAlarm.days,
           duration: parseInt(newAlarm.duration.toString())
         })
       });
@@ -146,14 +111,21 @@ const AlarmManager: React.FC<AlarmManagerProps> = ({ deviceId, isOnline }) => {
     }
   };
 
-  // Note: There's no toggle function in the backend API, so we'll skip this functionality
   const toggleAlarm = async (alarmId: string, isActive: boolean) => {
     try {
-      // Since there's no endpoint to toggle schedules, we'll just delete and recreate if needed
-      addNotification(`This functionality is not supported with the current backend API`, 'warning');
+      const response = await fetch(`https://rws-backend-v2.onrender.com/api/alarms/${alarmId}/toggle`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' }
+      });
+
+      const data = await response.json();
       
-      // Refresh the alarms/schedules list
-      fetchAlarms();
+      if (data.success) {
+        addNotification(data.message, 'success');
+        fetchAlarms();
+      } else {
+        throw new Error(data.error || 'Failed to toggle alarm');
+      }
       
     } catch (error: any) {
       console.error('Failed to toggle alarm:', error);
@@ -163,12 +135,19 @@ const AlarmManager: React.FC<AlarmManagerProps> = ({ deviceId, isOnline }) => {
 
   const deleteAlarm = async (alarmId: string) => {
     try {
-      // There's no specific DELETE endpoint for schedules, so we'll just refresh the view
-      // In a production app, we'd implement proper deletion functionality
-      addNotification('Alarm deletion is not supported with the current backend API', 'warning');
+      const response = await fetch(`https://rws-backend-v2.onrender.com/api/alarms/${alarmId}`, {
+        method: 'DELETE',
+        headers: { 'Content-Type': 'application/json' }
+      });
+
+      const data = await response.json();
       
-      // Refresh the list to show updated state from server
-      fetchAlarms();
+      if (data.success) {
+        addNotification('Alarm deleted successfully', 'success');
+        fetchAlarms();
+      } else {
+        throw new Error(data.error || 'Failed to delete alarm');
+      }
     } catch (error: any) {
       console.error('Failed to delete alarm:', error);
       addNotification(error.message || 'Failed to delete alarm', 'error');
