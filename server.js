@@ -696,30 +696,6 @@ async function handleAlarmExecuted(ws, data) {
     });
   }
 }
-    }, { new: true });
-    
-    if (schedule) {
-      console.log(`📅 Schedule ${scheduleId} marked as executed`);
-    } else {
-      console.warn(`⚠️ Schedule ${scheduleId} not found in database`);
-    }
-    
-    // Notify frontend
-    broadcastToFrontends('schedule_execution_confirmed', {
-      deviceId,
-      scheduleId,
-      timestamp: new Date().toISOString(),
-      scheduleFound: !!schedule
-    });
-    
-  } catch (error) {
-    console.error('❌ Failed to handle schedule execution:', error);
-    sendMessage(ws, MESSAGE_TYPE.ERROR, { 
-      error: 'Failed to process schedule execution',
-      details: error.message
-    });
-  }
-}
 
 async function handleFrontendJoin(ws) {
   try {
@@ -734,9 +710,9 @@ async function handleFrontendJoin(ws) {
     
     // Get current system status
     const devices = await Device.find().lean();
-    const activeSchedules = await Schedule.find({ 
-      status: 'pending',
-      time: { $gte: new Date() }
+    const activeSchedules = await Alarm.find({ 
+      isActive: true,
+      nextExecution: { $gte: new Date() }
     }).lean();
     
     sendMessage(ws, 'frontend_joined', {
@@ -1294,7 +1270,6 @@ agenda.define('check alarms', async (job) => {
 });
 
 async function executeAlarm(alarm) {
-  
   try {
     console.log(`⏰ Executing alarm for device ${alarm.deviceId}: ${alarm.name} (${alarm.duration}ms)`);
     
